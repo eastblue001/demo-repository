@@ -7,7 +7,7 @@ permissions:
       contents: read
       
 jobs: 
-  Azure Login Test:
+  Azure-Login-Test:
     runs-on: ubuntu-latest
     steps:
     - name: 'Az CLI login'
