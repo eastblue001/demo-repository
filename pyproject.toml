@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "yahoo-finance-mcp"
+version = "1.0.0"
+description = "A container-ready MCP server for Yahoo Finance market data"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "kentaro higashi" }]
+dependencies = [
+  "mcp==2.3.0",
+  "yfinance==1.8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<10",
+  "pytest-cov>=6,<8",
+  "ruff>=0.11,<1",
+]
+
+[project.scripts]
+yahoo-finance-mcp = "yahoo_finance_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/yahoo_finance_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
