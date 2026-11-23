@@ -10,7 +10,7 @@ env:
   CAE_RG: rg-sql-mcp
 
   CONTAINER_APP_NAME: app-sample
-  CONTAINER_APP_ENV: sql-mcp-env
+  CONTAINER_APP_ENV: cae-sql-mcp
 
   ACR_NAME: acrsqlmcpeastbluesv01
   IMAGE_NAME: sample-api
