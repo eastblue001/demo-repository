@@ -100,7 +100,7 @@ jobs:
       ############################################################
       - name: Update Container App
         run: |
-          az containerapp update \
+          az containerapp create \
             --name $CONTAINER_APP_NAME \
             --resource-group $ACA_RG \
             --image $ACR_NAME.azurecr.io/$IMAGE_NAME:${{ github.sha }}
