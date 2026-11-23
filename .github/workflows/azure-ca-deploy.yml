@@ -19,7 +19,7 @@ env:
   IMAGE_NAME: sample-api
 
   # Log Analytics
-  LAW_NAME: log-prod
+  LAW_NAME: workspace-rgsqlmcpcHn1
 
 jobs:
   deploy:
@@ -94,16 +94,6 @@ jobs:
 
           docker push \
             $ACR_NAME.azurecr.io/$IMAGE_NAME:latest
-
-      ############################################################
-      # Optional: Log Analytics Validation
-      ############################################################
-      - name: Verify Log Analytics Workspace
-        run: |
-          az monitor log-analytics workspace show \
-            --resource-group $CAE_RG \
-            --workspace-name $LAW_NAME \
-            --output table
 
       ############################################################
       # Update Container App
