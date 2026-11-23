@@ -6,20 +6,14 @@ on:
       - main
 
 env:
-  # Resource Groups
   ACA_RG: rg-aca
   CAE_RG: rg-sql-mcp
 
-  # Container App
   CONTAINER_APP_NAME: app-sample
   CONTAINER_APP_ENV: sql-mcp-env
 
-  # Container Registry
   ACR_NAME: acrsqlmcpeastbluesv01
   IMAGE_NAME: sample-api
-
-  # Log Analytics
-  LAW_NAME: workspace-rgsqlmcpcHn1
 
 jobs:
   deploy:
@@ -31,10 +25,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v4
 
       - name: Azure Login
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 #v3.1.0
+        uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -46,17 +40,11 @@ jobs:
             --name containerapp \
             --upgrade
 
-      ############################################################
-      # GitHub Runner Public IP
-      ############################################################
       - name: Get Runner Public IP
         id: ip
         run: |
           echo "ip=$(curl -s https://api.ipify.org)" >> $GITHUB_OUTPUT
 
-      ############################################################
-      # Allow ACR Firewall
-      ############################################################
       - name: Allow Runner IP to ACR
         run: |
           az acr network-rule add \
@@ -66,17 +54,10 @@ jobs:
       - name: Wait Firewall Propagation
         run: sleep 60
 
-      ############################################################
-      # Login to ACR
-      ############################################################
       - name: ACR Login
         run: |
-          az acr login \
-            --name $ACR_NAME
+          az acr login --name $ACR_NAME
 
-      ############################################################
-      # Docker Build
-      ############################################################
       - name: Build Image
         run: |
           docker build \
@@ -84,31 +65,52 @@ jobs:
             -t $ACR_NAME.azurecr.io/$IMAGE_NAME:latest \
             .
 
-      ############################################################
-      # Docker Push
-      ############################################################
       - name: Push Image
         run: |
-          docker push \
-            $ACR_NAME.azurecr.io/$IMAGE_NAME:${{ github.sha }}
+          docker push $ACR_NAME.azurecr.io/$IMAGE_NAME:${{ github.sha }}
+          docker push $ACR_NAME.azurecr.io/$IMAGE_NAME:latest
 
-          docker push \
-            $ACR_NAME.azurecr.io/$IMAGE_NAME:latest
-
-      ############################################################
-      # Update Container App
-      ############################################################
-      - name: Update Container App
+      - name: Get Environment Resource ID
+        id: env
         run: |
-          az containerapp create \
-            --name $CONTAINER_APP_NAME \
-            --resource-group $ACA_RG \
-            --image $ACR_NAME.azurecr.io/$IMAGE_NAME:${{ github.sha }}
+          ENV_ID=$(az containerapp env show \
+            --name $CONTAINER_APP_ENV \
+            --resource-group $CAE_RG \
+            --query id \
+            -o tsv)
 
-      ############################################################
-      # Show Revision
-      ############################################################
-      - name: Show Container App
+          echo "envId=$ENV_ID" >> $GITHUB_OUTPUT
+
+      - name: Create or Update Container App
+        run: |
+          IMAGE=$ACR_NAME.azurecr.io/$IMAGE_NAME:${{ github.sha }}
+
+          if az containerapp show \
+              --name $CONTAINER_APP_NAME \
+              --resource-group $ACA_RG >/dev/null 2>&1
+          then
+              echo "Container App exists. Updating..."
+
+              az containerapp update \
+                --name $CONTAINER_APP_NAME \
+                --resource-group $ACA_RG \
+                --image $IMAGE
+
+          else
+              echo "Container App does not exist. Creating..."
+
+              az containerapp create \
+                --name $CONTAINER_APP_NAME \
+                --resource-group $ACA_RG \
+                --environment "${{ steps.env.outputs.envId }}" \
+                --image $IMAGE \
+                --target-port 8080 \
+                --ingress external \
+                --registry-server $ACR_NAME.azurecr.io
+
+          fi
+
+      - name: Show Latest Revision
         run: |
           az containerapp show \
             --name $CONTAINER_APP_NAME \
@@ -116,9 +118,6 @@ jobs:
             --query properties.latestRevisionName \
             -o tsv
 
-      ############################################################
-      # Cleanup Firewall Rule
-      ############################################################
       - name: Remove Runner IP from ACR
         if: always()
         run: |
