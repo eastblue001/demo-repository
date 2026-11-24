@@ -93,7 +93,7 @@ jobs:
               az containerapp update \
                 --name $CONTAINER_APP_NAME \
                 --resource-group $ACA_RG \
-                --image $IMAGE
+                --image $IMAGE \
                 --set identity.userAssignedIdentities."${{ steps.identity.outputs.identityId }}"={}
           else
               echo "Container App does not exist. Creating..."
@@ -105,7 +105,7 @@ jobs:
                 --target-port 3000 \
                 --ingress external \
                 --user-assigned "${{ steps.identity.outputs.identityId }}" \
-                --registry-server $ACR_NAME.azurecr.io
+                --registry-server $ACR_NAME.azurecr.io \
                 --registry-identity "${{ steps.identity.outputs.identityId }}"
           fi
       - name: Show Latest Revision
