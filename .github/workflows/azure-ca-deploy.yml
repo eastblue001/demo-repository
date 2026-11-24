@@ -1,7 +1,6 @@
 name: Deploy Container Apps
 
 on:
-  workflow_dispatch: 
   push:
     branches:
       - main
@@ -15,6 +14,8 @@ env:
 
   ACR_NAME: acrsqlmcpeastbluesv01
   IMAGE_NAME: sample-api
+
+  MANAGED_IDENTITY_NAME: id-acr-pull
 
 jobs:
   deploy:
@@ -40,34 +41,28 @@ jobs:
           az extension add \
             --name containerapp \
             --upgrade
-
       - name: Get Runner Public IP
         id: ip
         run: |
           echo "ip=$(curl -s https://api.ipify.org)" >> $GITHUB_OUTPUT
-
       - name: Allow Runner IP to ACR
         run: |
           az acr network-rule add \
             --name $ACR_NAME \
             --ip-address ${{ steps.ip.outputs.ip }}
-
       - name: Wait Firewall Propagation
         run: sleep 60
 
       - name: ACR Login
         run: |
           az acr login --name $ACR_NAME
-
       - name: Build Image
         run: |
           docker build \
             -t $ACR_NAME.azurecr.io/$IMAGE_NAME:${{ github.sha }} .
-
       - name: Push Image
         run: |
           docker push $ACR_NAME.azurecr.io/$IMAGE_NAME:${{ github.sha }}
-
       - name: Get Environment Resource ID
         id: env
         run: |
@@ -76,38 +71,43 @@ jobs:
             --resource-group $CAE_RG \
             --query id \
             -o tsv)
-
           echo "envId=$ENV_ID" >> $GITHUB_OUTPUT
+      - name: Get User Assigned Identity
+        id: identity
+        run: |
+          IDENTITY_ID=$(az identity show \
+            --name $MANAGED_IDENTITY_NAME \
+            --resource-group $CAE_RG \
+            --query id \
+            -o tsv)
 
+          echo "identityId=$IDENTITY_ID" >> $GITHUB_OUTPUT
       - name: Create or Update Container App
         run: |
           IMAGE=$ACR_NAME.azurecr.io/$IMAGE_NAME:${{ github.sha }}
-
           if az containerapp show \
               --name $CONTAINER_APP_NAME \
               --resource-group $ACA_RG >/dev/null 2>&1
           then
               echo "Container App exists. Updating..."
-
               az containerapp update \
                 --name $CONTAINER_APP_NAME \
                 --resource-group $ACA_RG \
                 --image $IMAGE
-
+                --set identity.userAssignedIdentities."${{ steps.identity.outputs.identityId }}"={}
           else
               echo "Container App does not exist. Creating..."
-
               az containerapp create \
                 --name $CONTAINER_APP_NAME \
                 --resource-group $ACA_RG \
                 --environment "${{ steps.env.outputs.envId }}" \
                 --image $IMAGE \
-                --target-port 8080 \
+                --target-port 3000 \
                 --ingress external \
+                --user-assigned "${{ steps.identity.outputs.identityId }}" \
                 --registry-server $ACR_NAME.azurecr.io
-
+                --registry-identity "${{ steps.identity.outputs.identityId }}"
           fi
-
       - name: Show Latest Revision
         run: |
           az containerapp show \
@@ -115,7 +115,6 @@ jobs:
             --resource-group $ACA_RG \
             --query properties.latestRevisionName \
             -o tsv
-
       - name: Remove Runner IP from ACR
         if: always()
         run: |
