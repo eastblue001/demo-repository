@@ -93,8 +93,18 @@ jobs:
               az containerapp update \
                 --name $CONTAINER_APP_NAME \
                 --resource-group $ACA_RG \
-                --image $IMAGE \
-                --set identity.userAssignedIdentities."${{ steps.identity.outputs.identityId }}"={}
+                --image $IMAGE
+
+              az containerapp identity assign \
+                --name $CONTAINER_APP_NAME \
+                --resource-group $ACA_RG \
+                --user-assigned "${{ steps.identity.outputs.identityId }}"
+
+              az containerapp registry set \
+                --name $CONTAINER_APP_NAME \
+                --resource-group $ACA_RG \
+                --server $ACR_NAME.azurecr.io \
+                --identity "${{ steps.identity.outputs.identityId }}"
           else
               echo "Container App does not exist. Creating..."
               az containerapp create \
