@@ -146,11 +146,6 @@ jobs:
 
               echo "Container App exists. Updating..."
 
-              az containerapp update \
-                --name $CONTAINER_APP_NAME \
-                --resource-group $ACA_RG \
-                --image $IMAGE
-
               az containerapp identity assign \
                 --name $CONTAINER_APP_NAME \
                 --resource-group $ACA_RG \
@@ -161,6 +156,11 @@ jobs:
                 --resource-group $ACA_RG \
                 --server $ACR_NAME.azurecr.io \
                 --identity "${{ steps.identity.outputs.identityId }}"
+
+              az containerapp update \
+                --name $CONTAINER_APP_NAME \
+                --resource-group $ACA_RG \
+                --image $IMAGE
 
               # 念のため System Assigned を削除
               az containerapp identity remove \
@@ -177,7 +177,7 @@ jobs:
                 --resource-group $ACA_RG \
                 --environment "${{ steps.env.outputs.envId }}" \
                 --image $IMAGE \
-                --target-port 8000 \
+                --target-port 3000 \
                 --ingress external \
                 --user-assigned "${{ steps.identity.outputs.identityId }}" \
                 --registry-server $ACR_NAME.azurecr.io \
