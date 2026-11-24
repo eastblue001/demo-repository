@@ -16,6 +16,8 @@ env:
   IMAGE_NAME: sample-api
 
   MANAGED_IDENTITY_NAME: id-acr-pull
+  LOG_ANALYTICS_NAME: law-aca
+  LOCATION: japaneast
 
 jobs:
   deploy:
