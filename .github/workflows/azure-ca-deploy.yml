@@ -129,7 +129,7 @@ jobs:
         run: |
           IDENTITY_ID=$(az identity show \
             --name $MANAGED_IDENTITY_NAME \
-            --resource-group $ACA_RG \
+            --resource-group $CAE_RG \
             --query id \
             -o tsv)
 
