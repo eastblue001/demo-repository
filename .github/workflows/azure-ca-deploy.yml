@@ -4,20 +4,29 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
-  ACA_RG: rg-aca
-  CAE_RG: rg-sql-mcp
-
-  CONTAINER_APP_NAME: app-sample
+  # ===== 共通基盤（プラットフォームチームが管理）=====
+  SHARED_RG: rg-sql-mcp
   CONTAINER_APP_ENV: cae-sql-mcp
-
   ACR_NAME: acrsqlmcpeastbluesv01
-  IMAGE_NAME: sample-api
-
   MANAGED_IDENTITY_NAME: id-acr-pull
+
+  # ===== 部署リソース（各部署が管理）=====
+  DEPT_RG: rg-aca
+  CONTAINER_APP_NAME: app-sample
   LOG_ANALYTICS_NAME: law-aca
+  APP_INSIGHTS_NAME: appi-aca
   LOCATION: japaneast
+
+  # ===== アプリ設定 =====
+  IMAGE_NAME: sample-api
+  TARGET_PORT: 3000
 
 jobs:
   deploy:
@@ -32,18 +41,83 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Azure Login
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 #v3.1.0
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Install Container Apps Extension
+      - name: Install Azure CLI Extensions
         run: |
-          az extension add \
-            --name containerapp \
-            --upgrade
+          az config set extension.use_dynamic_install=yes_without_prompt
+          az extension add --name containerapp --upgrade
+          az extension add --name application-insights --upgrade
 
+      # ---------- 共通基盤の参照 ----------
+      - name: Get Shared Resources
+        id: shared
+        run: |
+          ENV_ID=$(az containerapp env show \
+            --name $CONTAINER_APP_ENV \
+            --resource-group $SHARED_RG \
+            --query id -o tsv)
+
+          ENV_STATE=$(az containerapp env show \
+            --name $CONTAINER_APP_ENV \
+            --resource-group $SHARED_RG \
+            --query properties.provisioningState -o tsv)
+
+          echo "Environment state: $ENV_STATE"
+          if [ "$ENV_STATE" != "Succeeded" ]; then
+            echo "::error::Container Apps Environment is not ready ($ENV_STATE)"
+            exit 1
+          fi
+
+          IDENTITY_ID=$(az identity show \
+            --name $MANAGED_IDENTITY_NAME \
+            --resource-group $SHARED_RG \
+            --query id -o tsv)
+
+          echo "envId=$ENV_ID" >> $GITHUB_OUTPUT
+          echo "identityId=$IDENTITY_ID" >> $GITHUB_OUTPUT
+
+      # ---------- 部署リソースの準備 ----------
+      - name: Ensure Log Analytics Workspace (Department)
+        id: law
+        run: |
+          if ! az monitor log-analytics workspace show \
+                --resource-group $DEPT_RG \
+                --workspace-name $LOG_ANALYTICS_NAME >/dev/null 2>&1; then
+            echo "Creating Log Analytics workspace..."
+            az monitor log-analytics workspace create \
+              --resource-group $DEPT_RG \
+              --workspace-name $LOG_ANALYTICS_NAME \
+              --location $LOCATION
+          fi
+
+          LAW_ID=$(az monitor log-analytics workspace show \
+            --resource-group $DEPT_RG \
+            --workspace-name $LOG_ANALYTICS_NAME \
+            --query id -o tsv)
+
+          echo "lawId=$LAW_ID" >> $GITHUB_OUTPUT
+
+      - name: Ensure Application Insights (Department)
+        run: |
+          if ! az monitor app-insights component show \
+                --app $APP_INSIGHTS_NAME \
+                --resource-group $DEPT_RG >/dev/null 2>&1; then
+            echo "Creating Application Insights..."
+            az monitor app-insights component create \
+              --app $APP_INSIGHTS_NAME \
+              --resource-group $DEPT_RG \
+              --location $LOCATION \
+              --kind web \
+              --application-type web \
+              --workspace "${{ steps.law.outputs.lawId }}"
+          fi
+
+      # ---------- イメージのビルドと push ----------
       - name: Get Runner Public IP
         id: ip
         run: |
@@ -55,12 +129,18 @@ jobs:
             --name $ACR_NAME \
             --ip-address ${{ steps.ip.outputs.ip }}
 
-      - name: Wait Firewall Propagation
-        run: sleep 60
-
-      - name: ACR Login
+      - name: ACR Login (wait for firewall propagation)
         run: |
-          az acr login --name $ACR_NAME
+          for i in $(seq 1 12); do
+            if az acr login --name $ACR_NAME; then
+              echo "ACR login succeeded"
+              exit 0
+            fi
+            echo "Retry $i/12 ..."
+            sleep 10
+          done
+          echo "::error::ACR login failed"
+          exit 1
 
       - name: Build Image
         run: |
@@ -72,122 +152,78 @@ jobs:
           docker push \
             $ACR_NAME.azurecr.io/$IMAGE_NAME:${{ github.sha }}
 
-      - name: Ensure Log Analytics Workspace
-        run: |
-          az monitor log-analytics workspace create \
-            --resource-group $ACA_RG \
-            --workspace-name $LOG_ANALYTICS_NAME \
-            --location $LOCATION
-
-      - name: Get Log Analytics Info
-        id: law
-        run: |
-          WORKSPACE_ID=$(az monitor log-analytics workspace show \
-            --resource-group $ACA_RG \
-            --workspace-name $LOG_ANALYTICS_NAME \
-            --query customerId \
-            -o tsv)
-
-          WORKSPACE_KEY=$(az monitor log-analytics workspace get-shared-keys \
-            --resource-group $ACA_RG \
-            --workspace-name $LOG_ANALYTICS_NAME \
-            --query primarySharedKey \
-            -o tsv)
-
-          echo "workspaceId=$WORKSPACE_ID" >> $GITHUB_OUTPUT
-          echo "workspaceKey=$WORKSPACE_KEY" >> $GITHUB_OUTPUT
-
-      # - name: Ensure Container Apps Environment
-      #   run: |
-      #     if ! az containerapp env show \
-      #       --name $CONTAINER_APP_ENV \
-      #       --resource-group $ACA_RG >/dev/null 2>&1
-      #     then
-
-      #       az containerapp env create \
-      #         --name $CONTAINER_APP_ENV \
-      #         --resource-group $ACA_RG \
-      #         --location $LOCATION \
-      #         --logs-workspace-id "${{ steps.law.outputs.workspaceId }}" \
-      #         --logs-workspace-key "${{ steps.law.outputs.workspaceKey }}"
-      #     fi
-
-      - name: Get Environment Resource ID
-        id: env
-        run: |
-          ENV_ID=$(az containerapp env show \
-            --name $CONTAINER_APP_ENV \
-            --resource-group $ACA_RG \
-            --query id \
-            -o tsv)
-
-          echo "envId=$ENV_ID" >> $GITHUB_OUTPUT
-
-      - name: Get User Assigned Identity
-        id: identity
-        run: |
-          IDENTITY_ID=$(az identity show \
-            --name $MANAGED_IDENTITY_NAME \
-            --resource-group $CAE_RG \
-            --query id \
-            -o tsv)
-
-          echo "identityId=$IDENTITY_ID" >> $GITHUB_OUTPUT
-
+      # ---------- Container App のデプロイ ----------
       - name: Create or Update Container App
         run: |
           IMAGE=$ACR_NAME.azurecr.io/$IMAGE_NAME:${{ github.sha }}
+
+          APPI_CONN=$(az monitor app-insights component show \
+            --app $APP_INSIGHTS_NAME \
+            --resource-group $DEPT_RG \
+            --query connectionString -o tsv)
+          echo "::add-mask::$APPI_CONN"
+
           if az containerapp show \
+               --name $CONTAINER_APP_NAME \
+               --resource-group $DEPT_RG >/dev/null 2>&1; then
+            echo "Container App exists. Updating..."
+
+            az containerapp secret set \
               --name $CONTAINER_APP_NAME \
-              --resource-group $ACA_RG >/dev/null 2>&1
-          then
-              echo "Container App exists. Updating..."
-              az containerapp update \
-                --name $CONTAINER_APP_NAME \
-                --resource-group $ACA_RG \
-                --image $IMAGE
-              az containerapp identity assign \
-                --name $CONTAINER_APP_NAME \
-                --resource-group $ACA_RG \
-                --user-assigned "${{ steps.identity.outputs.identityId }}"
-              az containerapp registry set \
-                --name $CONTAINER_APP_NAME \
-                --resource-group $ACA_RG \
-                --server $ACR_NAME.azurecr.io \
-                --identity "${{ steps.identity.outputs.identityId }}"
+              --resource-group $DEPT_RG \
+              --secrets "appi-conn=$APPI_CONN"
+
+            az containerapp update \
+              --name $CONTAINER_APP_NAME \
+              --resource-group $DEPT_RG \
+              --image $IMAGE \
+              --set-env-vars "APPLICATIONINSIGHTS_CONNECTION_STRING=secretref:appi-conn"
           else
-              echo "Container App does not exist. Creating..."
-              az containerapp create \
-                --name $CONTAINER_APP_NAME \
-                --resource-group $ACA_RG \
-                --environment "${{ steps.env.outputs.envId }}" \
-                --image $IMAGE \
-                --target-port 3000 \
-                --ingress external \
-                --user-assigned "${{ steps.identity.outputs.identityId }}" \
-                --registry-server $ACR_NAME.azurecr.io \
-                --cpu 0.25 --memory 0.5Gi \
-                --min-replicas 1 --max-replicas 3 \
-                --registry-identity "${{ steps.identity.outputs.identityId }}"
+            echo "Container App does not exist. Creating..."
+
+            az containerapp create \
+              --name $CONTAINER_APP_NAME \
+              --resource-group $DEPT_RG \
+              --environment "${{ steps.shared.outputs.envId }}" \
+              --image $IMAGE \
+              --target-port $TARGET_PORT \
+              --ingress external \
+              --user-assigned "${{ steps.shared.outputs.identityId }}" \
+              --registry-server $ACR_NAME.azurecr.io \
+              --registry-identity "${{ steps.shared.outputs.identityId }}" \
+              --secrets "appi-conn=$APPI_CONN" \
+              --env-vars "APPLICATIONINSIGHTS_CONNECTION_STRING=secretref:appi-conn" \
+              --cpu 0.25 --memory 0.5Gi \
+              --min-replicas 1 --max-replicas 3
           fi
 
-      - name: Use Log Analytics
+      - name: Verify Latest Revision
         run: |
-          az containerapp up -n $CONTAINER_APP_NAME \
-            --logs-workspace-id "${{ steps.law.outputs.workspaceId }}" \
-            --logs-workspace-key "${{ steps.law.outputs.workspaceKey }}" \
+          for i in $(seq 1 30); do
+            LATEST=$(az containerapp show -n $CONTAINER_APP_NAME -g $DEPT_RG \
+              --query properties.latestRevisionName -o tsv)
+            READY=$(az containerapp show -n $CONTAINER_APP_NAME -g $DEPT_RG \
+              --query properties.latestReadyRevisionName -o tsv)
 
-      - name: Show Latest Revision
-        run: |
-          az containerapp show \
-            --name $CONTAINER_APP_NAME \
-            --resource-group $ACA_RG \
-            --query properties.latestRevisionName \
-            -o tsv
-            
+            echo "latest=$LATEST ready=$READY"
+            if [ -n "$LATEST" ] && [ "$LATEST" = "$READY" ]; then
+              echo "Revision $LATEST is ready."
+              az containerapp show -n $CONTAINER_APP_NAME -g $DEPT_RG \
+                --query "{revision:properties.latestRevisionName, fqdn:properties.configuration.ingress.fqdn, status:properties.runningStatus}" \
+                -o table
+              exit 0
+            fi
+            sleep 10
+          done
+
+          echo "::error::Revision did not become ready. Check revision status / ImagePull errors."
+          az containerapp revision list -n $CONTAINER_APP_NAME -g $DEPT_RG -o table
+          exit 1
+
+      # ---------- 後片付け ----------
       - name: Remove Runner IP from ACR
-        if: always()
+        if: always() && steps.ip.outputs.ip != ''
         run: |
           az acr network-rule remove \
             --name $ACR_NAME \
-            --ip-address ${{ steps.ip.outputs.ip }}
+            --ip-address ${{ steps.ip.outputs.ip }} || true
