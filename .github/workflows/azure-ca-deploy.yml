@@ -177,7 +177,7 @@ jobs:
                 --resource-group $ACA_RG \
                 --environment "${{ steps.env.outputs.envId }}" \
                 --image $IMAGE \
-                --target-port 3000 \
+                --target-port 8000 \
                 --ingress external \
                 --user-assigned "${{ steps.identity.outputs.identityId }}" \
                 --registry-server $ACR_NAME.azurecr.io \
